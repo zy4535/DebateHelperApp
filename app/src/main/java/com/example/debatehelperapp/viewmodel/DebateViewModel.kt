@@ -24,7 +24,7 @@ data class DebatePhase(val name: String, val minutes: Int)
 
 class DebateViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val _currentScreen = MutableStateFlow("START")
+    private val _currentScreen = MutableStateFlow("SPLASH")
     val currentScreen: StateFlow<String> = _currentScreen.asStateFlow()
 
     val affDocumentText = MutableStateFlow("")

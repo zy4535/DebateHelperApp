@@ -26,12 +26,18 @@ import androidx.compose.ui.unit.sp
 import com.example.debatehelperapp.models.FlowColumn
 import com.example.debatehelperapp.ui.components.ArgumentCardView
 import com.example.debatehelperapp.viewmodel.DebateViewModel
-
+import kotlinx.coroutines.delay
+import androidx.compose.ui.res.painterResource
+import com.example.debatehelperapp.R
+import androidx.compose.foundation.Image
+// --- THE ROUTER ---
 @Composable
 fun DebateScreen(viewModel: DebateViewModel) {
     val currentScreen by viewModel.currentScreen.collectAsState()
 
+    // Added the "SPLASH" route to the top of the stack
     when (currentScreen) {
+        "SPLASH" -> SplashScreen(viewModel)
         "START" -> StartScreen(viewModel)
         "SETUP" -> SetupScreen(viewModel)
         "DEBATE" -> ActiveDebateScreen(viewModel)
@@ -379,6 +385,45 @@ fun ActiveDebateScreen(viewModel: DebateViewModel) {
                         Text("Close", color = Color(0xFF60A5FA), fontWeight = FontWeight.Bold)
                     }
                 }
+            )
+        }
+    }
+
+}
+@Composable
+fun SplashScreen(viewModel: DebateViewModel) {
+
+    LaunchedEffect(Unit) {
+        delay(2000L)
+        viewModel.navigateTo("START")
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0F172A)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // --- SWAP OUT ONLY THIS SECTION ---
+            // We removed the Box { Text("F") } and put the Image here instead
+            Image(
+                painter = painterResource(id = R.drawable.flow_logo), // Your actual logo file
+                contentDescription = "Flow Form Logo",
+                modifier = Modifier.size(100.dp)
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Keep your app name underneath the logo
+            Text(
+                text = "Flow Form",
+                color = Color.White,
+                fontSize = 36.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.5.sp
             )
         }
     }
