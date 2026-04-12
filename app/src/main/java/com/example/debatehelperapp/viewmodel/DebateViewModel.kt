@@ -1,9 +1,13 @@
 package com.example.debatehelperapp.viewmodel
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.debatehelperapp.audio.SpeechRecognitionManager
 import com.example.debatehelperapp.models.ArgumentCard
 import com.example.debatehelperapp.models.FlowColumn
+import com.example.debatehelperapp.models.SpeechUploadRequest
+import com.example.debatehelperapp.network.RetrofitClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,12 +15,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-// Defines a single phase in the debate
 data class DebatePhase(val name: String, val minutes: Int)
 
-class DebateViewModel : ViewModel() {
+class DebateViewModel(application: Application) : AndroidViewModel(application) {
 
-    // The strict Policy Debate sequence and time limits
     private val debateSequence = listOf(
         DebatePhase("1AC", 8),
         DebatePhase("1AC Cross-Ex", 3),
@@ -34,7 +36,7 @@ class DebateViewModel : ViewModel() {
 
     private var currentPhaseIndex = 0
 
-    // --- STATE FLOWS ---
+    // ── EXISTING STATE FLOWS (unchanged) ─────────────────────────────────────
     private val _currentSpeech = MutableStateFlow(debateSequence[currentPhaseIndex].name)
     val currentSpeech: StateFlow<String> = _currentSpeech.asStateFlow()
 
@@ -47,35 +49,111 @@ class DebateViewModel : ViewModel() {
     private val _flowBoardData = MutableStateFlow<List<FlowColumn>>(emptyList())
     val flowBoardData: StateFlow<List<FlowColumn>> = _flowBoardData.asStateFlow()
 
+    // ── NEW STATE FLOWS ───────────────────────────────────────────────────────
+    private val _liveTranscript = MutableStateFlow("")
+    val liveTranscript: StateFlow<String> = _liveTranscript.asStateFlow()
+
+    private val _statusMessage = MutableStateFlow("")
+    val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
+
+    // ── SINGLE MANAGER — handles mic, file saving, and live transcript ────────
+    // AudioCaptureManager is no longer needed — SpeechRecognitionManager
+    // now does both jobs in one mic session to avoid the RECORD_AUDIO conflict
+    private val speechManager = SpeechRecognitionManager(
+        context = application.applicationContext,
+        onPartialResult = { liveText ->
+            _liveTranscript.value = liveText
+        },
+        onFinalResult = { fullText ->
+            _liveTranscript.value = fullText
+        },
+        onError = { errorMsg ->
+            _statusMessage.value = errorMsg
+        }
+    )
+
     private var timerJob: Job? = null
 
     init {
-        // We still load dummy data so your UI isn't empty while testing
         loadDummyData()
     }
 
-    // --- TIMER & PROGRESSION LOGIC ---
+    // ── TIMER & RECORDING ─────────────────────────────────────────────────────
+
     fun toggleTimer() {
         if (_isRecording.value) {
-            timerJob?.cancel()
-            _isRecording.value = false
+            stopRecordingAndSubmit()
         } else {
-            _isRecording.value = true
-            timerJob = viewModelScope.launch {
-                while (_timeRemaining.value > 0) {
-                    delay(1000L)
-                    _timeRemaining.value -= 1
+            startRecording()
+        }
+    }
+
+    private fun startRecording() {
+        _isRecording.value = true
+        _liveTranscript.value = ""
+        _statusMessage.value = ""
+
+        // One call — starts MediaRecorder (file) + SpeechRecognizer (live text)
+        speechManager.startListening()
+
+        timerJob = viewModelScope.launch {
+            while (_timeRemaining.value > 0) {
+                delay(1000L)
+                _timeRemaining.value -= 1
+            }
+            stopRecordingAndSubmit()
+            advanceToNextSpeech()
+        }
+    }
+
+    private fun stopRecordingAndSubmit() {
+        timerJob?.cancel()
+        _isRecording.value = false
+
+        // Returns final transcript AND stops MediaRecorder saving the file
+        val finalTranscript = speechManager.stopListening()
+
+        // Audio file is also available if you need to send it to the server:
+        // val audioFile = speechManager.getAudioFile()
+
+        if (finalTranscript.isNotBlank()) {
+            submitToServer(finalTranscript)
+        }
+    }
+
+    // ── SERVER SUBMISSION ─────────────────────────────────────────────────────
+
+    private fun submitToServer(transcript: String) {
+        _statusMessage.value = "Sending to AI…"
+        viewModelScope.launch {
+            try {
+                val request = SpeechUploadRequest(
+                    text = transcript,
+                    speech_phase = _currentSpeech.value
+                )
+                val response = RetrofitClient.apiService.analyzeSpeech(request)
+                if (response.isSuccessful) {
+                    val body = response.body()
+                    if (body != null) {
+                        _flowBoardData.value = body.flows
+                        _statusMessage.value = "Flow updated"
+                    }
+                } else {
+                    _statusMessage.value = "Server error: ${response.code()}"
                 }
-                _isRecording.value = false
-                // Auto-advance when timer hits 0
-                advanceToNextSpeech()
+            } catch (e: Exception) {
+                _statusMessage.value = "Network error: ${e.message}"
             }
         }
     }
 
+    // ── SPEECH PROGRESSION (unchanged) ───────────────────────────────────────
+
     fun advanceToNextSpeech() {
         timerJob?.cancel()
         _isRecording.value = false
+        _liveTranscript.value = ""
+        _statusMessage.value = ""
 
         if (currentPhaseIndex < debateSequence.size - 1) {
             currentPhaseIndex++
@@ -88,34 +166,31 @@ class DebateViewModel : ViewModel() {
         }
     }
 
-    // --- Branden here is where you come in on this file ---
-    // when you get the JSON from Python, they will call this function to update the UI
+    // ── CALLED BY DEVELOPER 3 (unchanged) ────────────────────────────────────
     fun addAiArguments(speechName: String, newCards: List<ArgumentCard>) {
         val currentFlows = _flowBoardData.value.toMutableList()
-
-        // Find if we already have a column for this speech
         val existingColIndex = currentFlows.indexOfFirst { it.speechName == speechName }
-
         if (existingColIndex != -1) {
-            // Add new cards to existing column
             val oldColumn = currentFlows[existingColIndex]
-            val updatedCards = oldColumn.arguments + newCards
-            currentFlows[existingColIndex] = oldColumn.copy(arguments = updatedCards)
+            currentFlows[existingColIndex] = oldColumn.copy(
+                arguments = oldColumn.arguments + newCards
+            )
         } else {
-            // Create a brand new column
             currentFlows.add(FlowColumn(speechName, newCards))
         }
-
-        // Push the update to the UI
         _flowBoardData.value = currentFlows
     }
 
-    // Dummy data just to keep the UI looking nice while you build
     private fun loadDummyData() {
         val dummyCards = listOf(
             ArgumentCard("Advantage", "Economic Growth: Plan stimulates economy", "Smith '23", false),
             ArgumentCard("Impact", "Prevents recession - creates 2M jobs", "Jones '22", true)
         )
         _flowBoardData.value = listOf(FlowColumn("1AC", dummyCards))
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        speechManager.stopListening()
     }
 }

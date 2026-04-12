@@ -1,21 +1,31 @@
 package com.example.debatehelperapp.network
 
+import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.util.concurrent.TimeUnit
 
 object RetrofitClient {
 
-    // IMPORTANT HACKATHON NOTE: Change this URL!
-    // 1. If testing on Android Emulator to a local python server: "http://10.0.2.2:8000/"
-    // 2. If you are using a physical phone, you MUST use your teammate's IP or an ngrok link:
-    //    Example: "http://192.168.1.55:8000/" or "https://your-ngrok-url.ngrok-free.app/"
-
     private const val BASE_URL = "http://10.0.2.2:8000/"
+    // Emulator → 10.0.2.2   |   Real device → your machine's local IP   |   ngrok → https://...
+
+    private val loggingInterceptor = HttpLoggingInterceptor().apply {
+        level = HttpLoggingInterceptor.Level.BODY  // shows full request/response in Logcat
+    }
+
+    private val okHttpClient = OkHttpClient.Builder()
+        .addInterceptor(loggingInterceptor)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)   // Claude + Whisper can take 15-20s
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .build()
 
     val apiService: DebateApiService by lazy {
         Retrofit.Builder()
             .baseUrl(BASE_URL)
-            // This automatically converts the JSON into your Kotlin Data Classes
+            .client(okHttpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(DebateApiService::class.java)
