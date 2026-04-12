@@ -2,6 +2,8 @@ package com.example.debatehelperapp.models
 
 import com.google.gson.annotations.SerializedName
 
+// ─── CORE DEBATE MODELS ─────────────────────────────────────────────────────
+
 // Represents a single argument card on the flow board
 data class ArgumentCard(
     @SerializedName("argument_tag")
@@ -26,25 +28,14 @@ data class FlowColumn(
     val speechName: String,
 
     @SerializedName("arguments")
-    val arguments: List<ArgumentCard>
+    val arguments: List<ArgumentCard>,
+
+    // Stores the raw pasted text or spoken transcript so users can review the source
+    val rawText: String = ""
 )
 
- //The overall state of the debate returned by the Python backend
-data class DebateStateResponse(
-    @SerializedName("current_speech")
-    val currentSpeech: String,
 
-    @SerializedName("flows")
-    val flows: List<FlowColumn>
-)
-
-// The data we send TO the Python backend
-data class SpeechUploadRequest(
-    val text: String,
-    val speech_phase: String
-)
-
-// --- GEMINI API MODELS ---
+// ─── GEMINI API MODELS ──────────────────────────────────────────────────────
 
 data class GeminiPart(
     val text: String
@@ -59,13 +50,13 @@ data class GeminiSystemInstruction(
     val parts: List<GeminiPart>
 )
 
-// What we send to Gemini
+// What we send to Google's Gemini API
 data class GeminiRequest(
     val systemInstruction: GeminiSystemInstruction,
     val contents: List<GeminiContent>
 )
 
-// What Gemini sends back
+// What Google's Gemini API sends back
 data class GeminiResponse(
     val candidates: List<GeminiCandidate>?
 )

@@ -24,25 +24,45 @@ data class DebatePhase(val name: String, val minutes: Int)
 
 class DebateViewModel(application: Application) : AndroidViewModel(application) {
 
-    // The strict Policy Debate sequence and time limits
+    // --- NAVIGATION & SETUP STATE ---
+    private val _currentScreen = MutableStateFlow("START")
+    val currentScreen: StateFlow<String> = _currentScreen.asStateFlow()
+
+    val affDocumentText = MutableStateFlow("")
+    val negDocumentText = MutableStateFlow("")
+
+    fun navigateTo(screen: String) {
+        _currentScreen.value = screen
+    }
+
+    fun startDebateFromSetup() {
+        navigateTo("DEBATE")
+        _flowBoardData.value = emptyList()
+        _summaryText.value = ""
+
+        // INSTANTLY save pasted docs as sources, then send to AI
+        if (affDocumentText.value.isNotBlank()) {
+            saveRawTextToColumn("1AC Doc", affDocumentText.value)
+            submitToServer(affDocumentText.value, "1AC Doc")
+        }
+        if (negDocumentText.value.isNotBlank()) {
+            saveRawTextToColumn("1NC Doc", negDocumentText.value)
+            submitToServer(negDocumentText.value, "1NC Doc")
+        }
+    }
+
+    // --- DEBATE STATE ---
     private val debateSequence = listOf(
-        DebatePhase("1AC", 8),
-        DebatePhase("1AC Cross-Ex", 3),
-        DebatePhase("1NC", 8),
-        DebatePhase("1NC Cross-Ex", 3),
-        DebatePhase("2AC", 8),
-        DebatePhase("2AC Cross-Ex", 3),
-        DebatePhase("2NC", 8),
-        DebatePhase("2NC Cross-Ex", 3),
-        DebatePhase("1NR", 5),
-        DebatePhase("1AR", 5),
-        DebatePhase("2NR", 5),
-        DebatePhase("2AR", 5)
+        DebatePhase("1AC", 8), DebatePhase("1AC Cross-Ex", 3),
+        DebatePhase("1NC", 8), DebatePhase("1NC Cross-Ex", 3),
+        DebatePhase("2AC", 8), DebatePhase("2AC Cross-Ex", 3),
+        DebatePhase("2NC", 8), DebatePhase("2NC Cross-Ex", 3),
+        DebatePhase("1NR", 5), DebatePhase("1AR", 5),
+        DebatePhase("2NR", 5), DebatePhase("2AR", 5)
     )
 
     private var currentPhaseIndex = 0
 
-    // --- STATE FLOWS ---
     private val _currentSpeech = MutableStateFlow(debateSequence[currentPhaseIndex].name)
     val currentSpeech: StateFlow<String> = _currentSpeech.asStateFlow()
 
@@ -52,7 +72,6 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
-    // Controls the dark loading spinner overlay in DebateScreen.kt
     private val _isProcessing = MutableStateFlow(false)
     val isProcessing: StateFlow<Boolean> = _isProcessing.asStateFlow()
 
@@ -65,7 +84,10 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
     private val _statusMessage = MutableStateFlow("")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
 
-    // --- MICROPHONE MANAGER ---
+    // NEW: Holds the final debate summary
+    private val _summaryText = MutableStateFlow("")
+    val summaryText: StateFlow<String> = _summaryText.asStateFlow()
+
     private val speechManager = SpeechRecognitionManager(
         context = application.applicationContext,
         onPartialResult = { liveText -> _liveTranscript.value = liveText },
@@ -75,26 +97,17 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
 
     private var timerJob: Job? = null
 
-    init {
-        loadDummyData()
-    }
-
-    // --- TIMER & RECORDING LOGIC ---
+    // --- CORE LOGIC ---
     fun toggleTimer() {
-        if (_isRecording.value) {
-            stopRecordingAndSubmit()
-        } else {
-            startRecording()
-        }
+        if (_isRecording.value) stopRecordingAndSubmit()
+        else startRecording()
     }
 
     private fun startRecording() {
         _isRecording.value = true
         _liveTranscript.value = ""
         _statusMessage.value = ""
-
         speechManager.startListening()
-
         timerJob = viewModelScope.launch {
             while (_timeRemaining.value > 0) {
                 delay(1000L)
@@ -107,93 +120,26 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
     private fun stopRecordingAndSubmit() {
         timerJob?.cancel()
         _isRecording.value = false
-
-        // Grab the final transcribed text from Android's SpeechRecognizer
         val finalTranscript = speechManager.stopListening()
 
         if (finalTranscript.isNotBlank()) {
-            submitToServer(finalTranscript)
+            saveRawTextToColumn(_currentSpeech.value, finalTranscript)
+            submitToServer(finalTranscript, _currentSpeech.value)
         } else {
             _statusMessage.value = "No speech detected."
-            advanceToNextSpeech()
         }
     }
 
-    // --- DIRECT GEMINI API INTEGRATION ---
-    private fun submitToServer(transcript: String) {
-        _statusMessage.value = "Sending transcript to Gemini 1.5 Flash..."
-        _isProcessing.value = true // Show the loading spinner
-
-        viewModelScope.launch {
-            try {
-                // 1. Build the strict JSON instructions for Gemini
-                val systemPrompt = """
-                    You are a policy debate expert parsing a speech transcript.
-                    Extract each discrete argument or evidence card read in the speech.
-                    
-                    Return ONLY a raw JSON array matching this exact format. Do not include markdown formatting, backticks, or explanations:
-                    [
-                      {
-                        "argument_tag":  "short label/claim",
-                        "content_text":  "the argument or evidence",
-                        "source":        "author name and year if cited, else 'Analytic'",
-                        "is_dropped":    false
-                      }
-                    ]
-                """.trimIndent()
-
-                val userMessage = "Speech phase: ${_currentSpeech.value}\n\nTranscript:\n$transcript"
-
-                // 2. Package the request in Gemini's specific shape
-                val request = GeminiRequest(
-                    systemInstruction = GeminiSystemInstruction(listOf(GeminiPart(text = systemPrompt))),
-                    contents = listOf(
-                        GeminiContent(role = "user", parts = listOf(GeminiPart(text = userMessage)))
-                    )
-                )
-
-                // 3. Send to Google
-                val response = RetrofitClient.apiService.analyzeSpeech(request)
-
-                if (response.isSuccessful) {
-                    val body = response.body()
-
-                    // Navigate through Gemini's nested response to get the actual text
-                    val responseText = body?.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
-
-                    if (!responseText.isNullOrBlank()) {
-
-                        // 4. Clean the response (strip formatting if it disobeyed instructions)
-                        var rawJson = responseText.trim()
-                        rawJson = rawJson.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-
-                        // 5. Convert JSON string back into Kotlin ArgumentCard objects
-                        val listType = object : TypeToken<List<ArgumentCard>>() {}.type
-                        val newCards: List<ArgumentCard> = Gson().fromJson(rawJson, listType)
-
-                        // 6. Push directly to the UI
-                        addAiArguments(_currentSpeech.value, newCards)
-                        _statusMessage.value = "Flow successfully updated!"
-                    } else {
-                        _statusMessage.value = "AI returned an empty response."
-                    }
-                } else {
-                    _statusMessage.value = "API Error: ${response.code()}"
-                    android.util.Log.e("DebateApp", "Error Body: ${response.errorBody()?.string()}")
-                }
-            } catch (e: Exception) {
-                _statusMessage.value = "Network error: ${e.localizedMessage}"
-                android.util.Log.e("DebateApp", "Exception", e)
-            } finally {
-                // Always turn off the loading spinner and advance the round, even if it fails
-                _isProcessing.value = false
-                advanceToNextSpeech()
+    fun advanceToNextSpeech() {
+        // If they click "Next Speech" while actively recording, save what they have first!
+        if (_isRecording.value) {
+            val partialTranscript = speechManager.stopListening()
+            if (partialTranscript.isNotBlank()) {
+                saveRawTextToColumn(_currentSpeech.value, partialTranscript)
+                submitToServer(partialTranscript, _currentSpeech.value)
             }
         }
-    }
 
-    // --- DEBATE PROGRESSION LOGIC ---
-    fun advanceToNextSpeech() {
         timerJob?.cancel()
         _isRecording.value = false
         _liveTranscript.value = ""
@@ -210,28 +156,128 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // --- UI UPDATER ---
-    private fun addAiArguments(speechName: String, newCards: List<ArgumentCard>) {
+    // --- INSTANT DATA SAVING ---
+    // This runs immediately so you never lose source text, even if AI fails.
+    private fun saveRawTextToColumn(speechName: String, text: String) {
+        if (text.isBlank()) return
         val currentFlows = _flowBoardData.value.toMutableList()
-        val existingColIndex = currentFlows.indexOfFirst { it.speechName == speechName }
-        if (existingColIndex != -1) {
-            val oldColumn = currentFlows[existingColIndex]
-            currentFlows[existingColIndex] = oldColumn.copy(
-                arguments = oldColumn.arguments + newCards
-            )
+        val index = currentFlows.indexOfFirst { it.speechName == speechName }
+        if (index != -1) {
+            val old = currentFlows[index]
+            currentFlows[index] = old.copy(rawText = old.rawText + "\n\n---\n\n" + text)
         } else {
-            currentFlows.add(FlowColumn(speechName, newCards))
+            currentFlows.add(FlowColumn(speechName, emptyList(), text))
         }
         _flowBoardData.value = currentFlows
     }
 
-    // Dummy data so you aren't staring at a blank screen while testing
-    private fun loadDummyData() {
-        val dummyCards = listOf(
-            ArgumentCard("Advantage", "Economic Growth: Plan stimulates economy", "Smith '23", false),
-            ArgumentCard("Impact", "Prevents recession - creates 2M jobs", "Jones '22", true)
-        )
-        _flowBoardData.value = listOf(FlowColumn("1AC", dummyCards))
+    private fun addAiArguments(speechName: String, newCards: List<ArgumentCard>) {
+        if (newCards.isEmpty()) return
+        val currentFlows = _flowBoardData.value.toMutableList()
+        val index = currentFlows.indexOfFirst { it.speechName == speechName }
+        if (index != -1) {
+            val old = currentFlows[index]
+            currentFlows[index] = old.copy(arguments = old.arguments + newCards)
+        } else {
+            currentFlows.add(FlowColumn(speechName, newCards, ""))
+        }
+        _flowBoardData.value = currentFlows
+    }
+
+    // --- AI NETWORK CALLS ---
+    private fun submitToServer(transcript: String, targetSpeech: String) {
+        _statusMessage.value = "Processing cards via AI..."
+        _isProcessing.value = true
+
+        viewModelScope.launch {
+            try {
+                val systemPrompt = """
+                    You are a policy debate expert parsing a speech transcript.
+                    Extract each discrete argument or evidence card read in the speech.
+                    Return ONLY a raw JSON array matching this exact format. Do not include markdown formatting, backticks, or explanations:
+                    [
+                      {
+                        "argument_tag":  "short label/claim",
+                        "content_text":  "the argument or evidence",
+                        "source":        "author name and year if cited, else 'Analytic'",
+                        "is_dropped":    false
+                      }
+                    ]
+                """.trimIndent()
+
+                val userMessage = "Speech phase: $targetSpeech\n\nTranscript:\n$transcript"
+                val request = GeminiRequest(
+                    systemInstruction = GeminiSystemInstruction(listOf(GeminiPart(text = systemPrompt))),
+                    contents = listOf(GeminiContent(role = "user", parts = listOf(GeminiPart(text = userMessage))))
+                )
+
+                val response = RetrofitClient.apiService.analyzeSpeech(request)
+                if (response.isSuccessful) {
+                    val responseText = response.body()?.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                    if (!responseText.isNullOrBlank()) {
+                        val rawJson = responseText.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+                        val listType = object : TypeToken<List<ArgumentCard>>() {}.type
+                        val newCards: List<ArgumentCard> = Gson().fromJson(rawJson, listType)
+                        addAiArguments(targetSpeech, newCards)
+                        _statusMessage.value = "Cards generated!"
+                    } else {
+                        _statusMessage.value = "AI found no distinct cards."
+                    }
+                } else {
+                    _statusMessage.value = "API Error: ${response.code()}"
+                }
+            } catch (e: Exception) {
+                _statusMessage.value = "Network error: ${e.localizedMessage}"
+            } finally {
+                _isProcessing.value = false
+            }
+        }
+    }
+
+    // --- SUMMARY & RESET LOGIC ---
+    fun generateSummary() {
+        _isProcessing.value = true
+        _statusMessage.value = "Judging the round..."
+
+        viewModelScope.launch {
+            try {
+                val flowDataString = _flowBoardData.value.joinToString("\n\n") {
+                    "Speech: ${it.speechName}\nRaw Text: ${it.rawText}\nCards Generated: ${it.arguments.size}"
+                }
+
+                val prompt = "You are an expert debate judge. Based on the following record of the round, provide a concise RFD (Reason for Decision). Tell me who won, the main clash points, and why.\n\n$flowDataString"
+
+                val request = GeminiRequest(
+                    systemInstruction = GeminiSystemInstruction(listOf(GeminiPart(text = "You are an expert debate judge providing clear, concise feedback."))),
+                    contents = listOf(GeminiContent(role = "user", parts = listOf(GeminiPart(text = prompt))))
+                )
+
+                val response = RetrofitClient.apiService.analyzeSpeech(request)
+                if (response.isSuccessful) {
+                    val text = response.body()?.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                    _summaryText.value = text ?: "Could not generate summary."
+                } else {
+                    _statusMessage.value = "Error generating summary: ${response.code()}"
+                }
+            } catch (e: Exception) {
+                _statusMessage.value = "Network error: ${e.localizedMessage}"
+            } finally {
+                _isProcessing.value = false
+            }
+        }
+    }
+
+    fun resetDebate() {
+        currentPhaseIndex = 0
+        _currentSpeech.value = debateSequence[0].name
+        _timeRemaining.value = debateSequence[0].minutes * 60
+        _flowBoardData.value = emptyList()
+        _summaryText.value = ""
+        affDocumentText.value = ""
+        negDocumentText.value = ""
+        _liveTranscript.value = ""
+        _statusMessage.value = ""
+        navigateTo("START")
     }
 
     override fun onCleared() {
