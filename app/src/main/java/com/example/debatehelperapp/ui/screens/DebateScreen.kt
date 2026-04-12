@@ -20,13 +20,11 @@ import com.example.debatehelperapp.viewmodel.DebateViewModel
 
 @Composable
 fun DebateScreen(viewModel: DebateViewModel) {
-    // Collect state from the ViewModel
     val timeRemaining by viewModel.timeRemaining.collectAsState()
     val currentSpeech by viewModel.currentSpeech.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
     val flows by viewModel.flowBoardData.collectAsState()
 
-    // Format timer (e.g., "08:00")
     val minutes = timeRemaining / 60
     val seconds = timeRemaining % 60
     val timerText = String.format("%02d:%02d", minutes, seconds)
@@ -34,7 +32,7 @@ fun DebateScreen(viewModel: DebateViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0F172A)) // Dark background
+            .background(Color(0xFF0F172A))
     ) {
         // --- TOP BAR ---
         Row(
@@ -53,10 +51,10 @@ fun DebateScreen(viewModel: DebateViewModel) {
             Text(text = timerText, color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold)
         }
 
-        // --- FLOW BOARD (Horizontal Scroll) ---
+        // --- FLOW BOARD ---
         LazyRow(
             modifier = Modifier
-                .weight(1f) // Takes up remaining middle space
+                .weight(1f)
                 .fillMaxWidth()
                 .padding(8.dp)
         ) {
@@ -76,7 +74,6 @@ fun DebateScreen(viewModel: DebateViewModel) {
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
 
-                    // Cards inside the column (Vertical Scroll)
                     LazyColumn {
                         items(flowColumn.arguments) { card ->
                             ArgumentCardView(card = card)
@@ -87,21 +84,42 @@ fun DebateScreen(viewModel: DebateViewModel) {
         }
 
         // --- BOTTOM CONTROLS ---
-        Button(
-            onClick = { viewModel.toggleTimer() },
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
-                .height(56.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = if (isRecording) Color.Red else Color(0xFF3B82F6)
-            )
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = if (isRecording) "Stop Recording & Speech" else "Start Speech & Record",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold
-            )
+            Button(
+                onClick = { viewModel.toggleTimer() },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(56.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isRecording) Color.Red else Color(0xFF3B82F6)
+                )
+            ) {
+                Text(
+                    text = if (isRecording) "Stop" else "Record",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // New button to skip to the next phase of the debate
+            Button(
+                onClick = { viewModel.advanceToNextSpeech() },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(56.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4B5563))
+            ) {
+                Text(
+                    text = "Next Speech ⏭",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }
