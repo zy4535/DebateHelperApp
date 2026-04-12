@@ -9,7 +9,7 @@ import java.util.concurrent.TimeUnit
 object RetrofitClient {
 
     // 1. PUT YOUR ACTUAL API KEY HERE
-    const val GEMINI_API_KEY = "AIzaSyAVE3pHuCYsu_V0AGXTcwLRZsooszU8zD4"
+    const val GEMINI_API_KEY = "AIzaSyD6729NsBXzkOkE9kXAdTu3lftjhl2Npb8"
 
     // 2. MUST EXACTLY BE THIS GOOGLE URL
     private const val BASE_URL = "https://generativelanguage.googleapis.com/"
