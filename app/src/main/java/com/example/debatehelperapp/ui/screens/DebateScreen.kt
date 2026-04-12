@@ -5,6 +5,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -12,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -25,32 +29,44 @@ import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun DebateScreen(viewModel: DebateViewModel) {
+    // ── EXISTING state (unchanged) ────────────────────────────────────────────
     val timeRemaining by viewModel.timeRemaining.collectAsState()
     val currentSpeech by viewModel.currentSpeech.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
     val flows by viewModel.flowBoardData.collectAsState()
+
+    // ── NEW state ─────────────────────────────────────────────────────────────
+    val liveTranscript by viewModel.liveTranscript.collectAsState()
+    val statusMessage by viewModel.statusMessage.collectAsState()
 
     val minutes = timeRemaining / 60
     val seconds = timeRemaining % 60
     val timerText = String.format("%02d:%02d", minutes, seconds)
 
     val context = LocalContext.current
+
+    // Permission launcher — unchanged logic, still calls viewModel.toggleTimer()
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
-            // Permission granted! Start the timer and recording logic in the ViewModel
             viewModel.toggleTimer()
         } else {
-            Toast.makeText(context, "Microphone permission is required to analyze speeches!", Toast.LENGTH_LONG).show()
+            Toast.makeText(
+                context,
+                "Microphone permission is required to analyze speeches!",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF0F172A))
     ) {
-        // --- TOP BAR ---
+
+        // ── TOP BAR (unchanged) ───────────────────────────────────────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -61,13 +77,85 @@ fun DebateScreen(viewModel: DebateViewModel) {
         ) {
             Column {
                 Text(text = "Current Speech", color = Color.Gray, fontSize = 12.sp)
-                Text(text = currentSpeech, color = Color(0xFFFBBF24), fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    text = currentSpeech,
+                    color = Color(0xFFFBBF24),
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
-
-            Text(text = timerText, color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold)
+            Text(
+                text = timerText,
+                color = Color.White,
+                fontSize = 36.sp,
+                fontWeight = FontWeight.Bold
+            )
         }
 
-        // --- FLOW BOARD ---
+        // ── LIVE TRANSCRIPT BOX (new) ─────────────────────────────────────────
+        // Only visible while recording or when there is text to show
+        if (isRecording || liveTranscript.isNotBlank()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .background(Color(0xFF1E293B), shape = RoundedCornerShape(8.dp))
+                    .padding(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Pulsing red dot while recording
+                    if (isRecording) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .background(Color.Red, shape = RoundedCornerShape(50))
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+                    Text(
+                        text = if (isRecording) "Listening…" else "Transcript",
+                        color = Color.Gray,
+                        fontSize = 12.sp
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Scrollable transcript text
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp, max = 160.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = if (liveTranscript.isBlank() && isRecording)
+                            "Start speaking…"
+                        else
+                            liveTranscript,
+                        color = if (liveTranscript.isBlank()) Color.Gray else Color.White,
+                        fontSize = 14.sp,
+                        fontStyle = if (liveTranscript.isBlank()) FontStyle.Italic else FontStyle.Normal,
+                        lineHeight = 20.sp
+                    )
+                }
+
+                // Status message ("Sending to AI…", errors)
+                if (statusMessage.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = statusMessage,
+                        color = if (statusMessage.startsWith("Error") || statusMessage.startsWith("Network"))
+                            Color(0xFFEF4444)
+                        else
+                            Color(0xFF34D399),
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
+        // ── FLOW BOARD (unchanged) ────────────────────────────────────────────
         LazyRow(
             modifier = Modifier
                 .weight(1f)
@@ -89,7 +177,6 @@ fun DebateScreen(viewModel: DebateViewModel) {
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
-
                     LazyColumn {
                         items(flowColumn.arguments) { card ->
                             ArgumentCardView(card = card)
@@ -99,7 +186,7 @@ fun DebateScreen(viewModel: DebateViewModel) {
             }
         }
 
-        // --- BOTTOM CONTROLS ---
+        // ── BOTTOM CONTROLS (unchanged) ───────────────────────────────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -109,10 +196,8 @@ fun DebateScreen(viewModel: DebateViewModel) {
             Button(
                 onClick = {
                     if (isRecording) {
-                        // If already recording, just stop it
                         viewModel.toggleTimer()
                     } else {
-                        // If NOT recording, ask for permission first!
                         permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     }
                 },
