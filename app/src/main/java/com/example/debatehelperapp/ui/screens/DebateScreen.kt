@@ -130,7 +130,8 @@ fun ActiveDebateScreen(viewModel: DebateViewModel) {
     val seconds = timeRemaining % 60
     val timerText = String.format("%02d:%02d", minutes, seconds)
     val context = LocalContext.current
-
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val screenWidth = configuration.screenWidthDp.dp
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
@@ -190,29 +191,93 @@ fun ActiveDebateScreen(viewModel: DebateViewModel) {
                 }
             }
 
-            // --- FLOW BOARD ---
-            LazyRow(modifier = Modifier.weight(1f).fillMaxWidth().padding(8.dp)) {
-                items(flows) { flowColumn ->
-                    Column(
-                        modifier = Modifier.width(280.dp).fillMaxHeight().padding(end = 8.dp)
-                            .background(Color(0xFF1E293B)).padding(8.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color(0xFF334155), shape = RoundedCornerShape(4.dp))
-                                .clickable { selectedColumnForDialog = flowColumn }
-                                .padding(8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(text = flowColumn.speechName, color = Color.White, fontWeight = FontWeight.Bold)
-                            Text(text = "View Source 📄", color = Color(0xFF60A5FA), fontSize = 10.sp)
+// --- 2-COLUMN FLOW BOARD ---
+            // Automatically sort speeches by Affirmative ("A") and Negative ("N")
+            val affFlows = flows.filter { it.speechName.contains("A", ignoreCase = true) }
+            val negFlows = flows.filter { it.speechName.contains("N", ignoreCase = true) }
+
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // --- AFFIRMATIVE COLUMN (Left Half) ---
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(Color(0xFF1E293B), shape = RoundedCornerShape(8.dp))
+                        .padding(8.dp)
+                ) {
+                    item {
+                        Text(
+                            text = "AFFIRMATIVE",
+                            color = Color(0xFF60A5FA), // Blue
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            modifier = Modifier.padding(bottom = 12.dp, start = 4.dp)
+                        )
+                    }
+                    affFlows.forEach { flowColumn ->
+                        item {
+                            // Sub-header for 1AC, 2AC, etc.
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF334155), shape = RoundedCornerShape(4.dp))
+                                    .clickable { selectedColumnForDialog = flowColumn }
+                                    .padding(8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(text = flowColumn.speechName, color = Color.White, fontWeight = FontWeight.Bold)
+                                Text(text = "Source 📄", color = Color.LightGray, fontSize = 10.sp)
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
                         }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        LazyColumn {
-                            items(flowColumn.arguments) { card -> ArgumentCardView(card = card) }
+                        items(flowColumn.arguments) { card -> ArgumentCardView(card = card) }
+                        item { Spacer(modifier = Modifier.height(16.dp)) }
+                    }
+                }
+
+                // --- NEGATIVE COLUMN (Right Half) ---
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(Color(0xFF1E293B), shape = RoundedCornerShape(8.dp))
+                        .padding(8.dp)
+                ) {
+                    item {
+                        Text(
+                            text = "NEGATIVE",
+                            color = Color(0xFFF87171), // Red
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            modifier = Modifier.padding(bottom = 12.dp, start = 4.dp)
+                        )
+                    }
+                    negFlows.forEach { flowColumn ->
+                        item {
+                            // Sub-header for 1NC, 2NC, etc.
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF334155), shape = RoundedCornerShape(4.dp))
+                                    .clickable { selectedColumnForDialog = flowColumn }
+                                    .padding(8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(text = flowColumn.speechName, color = Color.White, fontWeight = FontWeight.Bold)
+                                Text(text = "Source 📄", color = Color.LightGray, fontSize = 10.sp)
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
                         }
+                        items(flowColumn.arguments) { card -> ArgumentCardView(card = card) }
+                        item { Spacer(modifier = Modifier.height(16.dp)) }
                     }
                 }
             }

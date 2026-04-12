@@ -24,23 +24,20 @@ data class DebatePhase(val name: String, val minutes: Int)
 
 class DebateViewModel(application: Application) : AndroidViewModel(application) {
 
-    // --- NAVIGATION & SETUP STATE ---
     private val _currentScreen = MutableStateFlow("START")
     val currentScreen: StateFlow<String> = _currentScreen.asStateFlow()
 
     val affDocumentText = MutableStateFlow("")
     val negDocumentText = MutableStateFlow("")
 
-    fun navigateTo(screen: String) {
-        _currentScreen.value = screen
-    }
+    fun navigateTo(screen: String) { _currentScreen.value = screen }
 
     fun startDebateFromSetup() {
         navigateTo("DEBATE")
         _flowBoardData.value = emptyList()
         _summaryText.value = ""
+        currentSpeechAccumulatedText = ""
 
-        // INSTANTLY save pasted docs as sources, then send to AI
         if (affDocumentText.value.isNotBlank()) {
             saveRawTextToColumn("1AC Doc", affDocumentText.value)
             submitToServer(affDocumentText.value, "1AC Doc")
@@ -51,7 +48,6 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // --- DEBATE STATE ---
     private val debateSequence = listOf(
         DebatePhase("1AC", 8), DebatePhase("1AC Cross-Ex", 3),
         DebatePhase("1NC", 8), DebatePhase("1NC Cross-Ex", 3),
@@ -84,64 +80,74 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
     private val _statusMessage = MutableStateFlow("")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
 
-    // NEW: Holds the final debate summary
     private val _summaryText = MutableStateFlow("")
     val summaryText: StateFlow<String> = _summaryText.asStateFlow()
 
+    private var currentSpeechAccumulatedText = ""
+
     private val speechManager = SpeechRecognitionManager(
         context = application.applicationContext,
-        onPartialResult = { liveText -> _liveTranscript.value = liveText },
-        onFinalResult = { fullText -> _liveTranscript.value = fullText },
+        onPartialResult = { liveText ->
+            _liveTranscript.value = (currentSpeechAccumulatedText + " " + liveText).trim()
+        },
+        onFinalResult = { fullText ->
+            _liveTranscript.value = (currentSpeechAccumulatedText + " " + fullText).trim()
+        },
         onError = { errorMsg -> _statusMessage.value = errorMsg }
     )
 
     private var timerJob: Job? = null
 
-    // --- CORE LOGIC ---
     fun toggleTimer() {
-        if (_isRecording.value) stopRecordingAndSubmit()
+        if (_isRecording.value) stopRecording()
         else startRecording()
     }
 
     private fun startRecording() {
         _isRecording.value = true
-        _liveTranscript.value = ""
-        _statusMessage.value = ""
+        _statusMessage.value = "Listening..."
         speechManager.startListening()
+
         timerJob = viewModelScope.launch {
             while (_timeRemaining.value > 0) {
                 delay(1000L)
                 _timeRemaining.value -= 1
             }
-            stopRecordingAndSubmit()
+            advanceToNextSpeech()
         }
     }
 
-    private fun stopRecordingAndSubmit() {
+    private fun stopRecording() {
         timerJob?.cancel()
         _isRecording.value = false
-        val finalTranscript = speechManager.stopListening()
+        speechManager.stopListening() // Fire and forget
 
-        if (finalTranscript.isNotBlank()) {
-            saveRawTextToColumn(_currentSpeech.value, finalTranscript)
-            submitToServer(finalTranscript, _currentSpeech.value)
-        } else {
-            _statusMessage.value = "No speech detected."
+        // BUG FIX: Grab text directly from the screen's memory!
+        currentSpeechAccumulatedText = _liveTranscript.value.trim()
+
+        if (currentSpeechAccumulatedText.isNotBlank()) {
+            saveRawTextToColumn(_currentSpeech.value, currentSpeechAccumulatedText)
         }
+        _statusMessage.value = "Paused."
     }
 
     fun advanceToNextSpeech() {
-        // If they click "Next Speech" while actively recording, save what they have first!
         if (_isRecording.value) {
-            val partialTranscript = speechManager.stopListening()
-            if (partialTranscript.isNotBlank()) {
-                saveRawTextToColumn(_currentSpeech.value, partialTranscript)
-                submitToServer(partialTranscript, _currentSpeech.value)
-            }
+            timerJob?.cancel()
+            _isRecording.value = false
+            speechManager.stopListening()
+            currentSpeechAccumulatedText = _liveTranscript.value.trim()
         }
 
-        timerJob?.cancel()
-        _isRecording.value = false
+        val finalSpeechText = currentSpeechAccumulatedText
+
+        if (finalSpeechText.isNotBlank()) {
+            saveRawTextToColumn(_currentSpeech.value, finalSpeechText)
+            submitToServer(finalSpeechText, _currentSpeech.value)
+        }
+
+        // Reset for the next speech phase
+        currentSpeechAccumulatedText = ""
         _liveTranscript.value = ""
         _statusMessage.value = ""
 
@@ -156,15 +162,13 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // --- INSTANT DATA SAVING ---
-    // This runs immediately so you never lose source text, even if AI fails.
     private fun saveRawTextToColumn(speechName: String, text: String) {
         if (text.isBlank()) return
         val currentFlows = _flowBoardData.value.toMutableList()
         val index = currentFlows.indexOfFirst { it.speechName == speechName }
         if (index != -1) {
             val old = currentFlows[index]
-            currentFlows[index] = old.copy(rawText = old.rawText + "\n\n---\n\n" + text)
+            currentFlows[index] = old.copy(rawText = text)
         } else {
             currentFlows.add(FlowColumn(speechName, emptyList(), text))
         }
@@ -184,7 +188,6 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
         _flowBoardData.value = currentFlows
     }
 
-    // --- AI NETWORK CALLS ---
     private fun submitToServer(transcript: String, targetSpeech: String) {
         _statusMessage.value = "Processing cards via AI..."
         _isProcessing.value = true
@@ -211,7 +214,7 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
                     contents = listOf(GeminiContent(role = "user", parts = listOf(GeminiPart(text = userMessage))))
                 )
 
-                val response = RetrofitClient.apiService.analyzeSpeech(request)
+                val response = RetrofitClient.apiService.analyzeSpeech(RetrofitClient.GEMINI_API_KEY, request)
                 if (response.isSuccessful) {
                     val responseText = response.body()?.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
                     if (!responseText.isNullOrBlank()) {
@@ -234,7 +237,6 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // --- SUMMARY & RESET LOGIC ---
     fun generateSummary() {
         _isProcessing.value = true
         _statusMessage.value = "Judging the round..."
@@ -252,7 +254,7 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
                     contents = listOf(GeminiContent(role = "user", parts = listOf(GeminiPart(text = prompt))))
                 )
 
-                val response = RetrofitClient.apiService.analyzeSpeech(request)
+                val response = RetrofitClient.apiService.analyzeSpeech(RetrofitClient.GEMINI_API_KEY, request)
                 if (response.isSuccessful) {
                     val text = response.body()?.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
                     _summaryText.value = text ?: "Could not generate summary."
@@ -275,6 +277,7 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
         _summaryText.value = ""
         affDocumentText.value = ""
         negDocumentText.value = ""
+        currentSpeechAccumulatedText = ""
         _liveTranscript.value = ""
         _statusMessage.value = ""
         navigateTo("START")
