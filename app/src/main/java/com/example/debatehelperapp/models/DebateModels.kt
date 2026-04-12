@@ -29,7 +29,7 @@ data class FlowColumn(
     val arguments: List<ArgumentCard>
 )
 
-// The overall state of the debate returned by the Python backend
+ //The overall state of the debate returned by the Python backend
 data class DebateStateResponse(
     @SerializedName("current_speech")
     val currentSpeech: String,
