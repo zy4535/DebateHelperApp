@@ -17,6 +17,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.debatehelperapp.ui.components.ArgumentCardView
 import com.example.debatehelperapp.viewmodel.DebateViewModel
+import android.Manifest
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun DebateScreen(viewModel: DebateViewModel) {
@@ -29,6 +34,17 @@ fun DebateScreen(viewModel: DebateViewModel) {
     val seconds = timeRemaining % 60
     val timerText = String.format("%02d:%02d", minutes, seconds)
 
+    val context = LocalContext.current
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            // Permission granted! Start the timer and recording logic in the ViewModel
+            viewModel.toggleTimer()
+        } else {
+            Toast.makeText(context, "Microphone permission is required to analyze speeches!", Toast.LENGTH_LONG).show()
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -91,7 +107,15 @@ fun DebateScreen(viewModel: DebateViewModel) {
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Button(
-                onClick = { viewModel.toggleTimer() },
+                onClick = {
+                    if (isRecording) {
+                        // If already recording, just stop it
+                        viewModel.toggleTimer()
+                    } else {
+                        // If NOT recording, ask for permission first!
+                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                },
                 modifier = Modifier
                     .weight(1f)
                     .height(56.dp),
@@ -106,7 +130,6 @@ fun DebateScreen(viewModel: DebateViewModel) {
                 )
             }
 
-            // New button to skip to the next phase of the debate
             Button(
                 onClick = { viewModel.advanceToNextSpeech() },
                 modifier = Modifier
