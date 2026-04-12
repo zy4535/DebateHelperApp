@@ -53,7 +53,9 @@ class DebateViewModel : ViewModel() {
         // We still load dummy data so your UI isn't empty while testing
         loadDummyData()
     }
-
+    // Add this to track the loading state
+    private val _isProcessing = MutableStateFlow(false)
+    val isProcessing: StateFlow<Boolean> = _isProcessing.asStateFlow()
     // --- TIMER & PROGRESSION LOGIC ---
     fun toggleTimer() {
         if (_isRecording.value) {
