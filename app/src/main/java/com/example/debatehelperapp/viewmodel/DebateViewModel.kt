@@ -6,8 +6,13 @@ import androidx.lifecycle.viewModelScope
 import com.example.debatehelperapp.audio.SpeechRecognitionManager
 import com.example.debatehelperapp.models.ArgumentCard
 import com.example.debatehelperapp.models.FlowColumn
-import com.example.debatehelperapp.models.SpeechUploadRequest
+import com.example.debatehelperapp.models.GeminiContent
+import com.example.debatehelperapp.models.GeminiPart
+import com.example.debatehelperapp.models.GeminiRequest
+import com.example.debatehelperapp.models.GeminiSystemInstruction
 import com.example.debatehelperapp.network.RetrofitClient
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +24,7 @@ data class DebatePhase(val name: String, val minutes: Int)
 
 class DebateViewModel(application: Application) : AndroidViewModel(application) {
 
+    // The strict Policy Debate sequence and time limits
     private val debateSequence = listOf(
         DebatePhase("1AC", 8),
         DebatePhase("1AC Cross-Ex", 3),
@@ -36,7 +42,7 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
 
     private var currentPhaseIndex = 0
 
-    // ── EXISTING STATE FLOWS (unchanged) ─────────────────────────────────────
+    // --- STATE FLOWS ---
     private val _currentSpeech = MutableStateFlow(debateSequence[currentPhaseIndex].name)
     val currentSpeech: StateFlow<String> = _currentSpeech.asStateFlow()
 
@@ -46,30 +52,25 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
+    // Controls the dark loading spinner overlay in DebateScreen.kt
+    private val _isProcessing = MutableStateFlow(false)
+    val isProcessing: StateFlow<Boolean> = _isProcessing.asStateFlow()
+
     private val _flowBoardData = MutableStateFlow<List<FlowColumn>>(emptyList())
     val flowBoardData: StateFlow<List<FlowColumn>> = _flowBoardData.asStateFlow()
 
-    // ── NEW STATE FLOWS ───────────────────────────────────────────────────────
     private val _liveTranscript = MutableStateFlow("")
     val liveTranscript: StateFlow<String> = _liveTranscript.asStateFlow()
 
     private val _statusMessage = MutableStateFlow("")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
 
-    // ── SINGLE MANAGER — handles mic, file saving, and live transcript ────────
-    // AudioCaptureManager is no longer needed — SpeechRecognitionManager
-    // now does both jobs in one mic session to avoid the RECORD_AUDIO conflict
+    // --- MICROPHONE MANAGER ---
     private val speechManager = SpeechRecognitionManager(
         context = application.applicationContext,
-        onPartialResult = { liveText ->
-            _liveTranscript.value = liveText
-        },
-        onFinalResult = { fullText ->
-            _liveTranscript.value = fullText
-        },
-        onError = { errorMsg ->
-            _statusMessage.value = errorMsg
-        }
+        onPartialResult = { liveText -> _liveTranscript.value = liveText },
+        onFinalResult = { fullText -> _liveTranscript.value = fullText },
+        onError = { errorMsg -> _statusMessage.value = errorMsg }
     )
 
     private var timerJob: Job? = null
@@ -78,8 +79,7 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
         loadDummyData()
     }
 
-    // ── TIMER & RECORDING ─────────────────────────────────────────────────────
-
+    // --- TIMER & RECORDING LOGIC ---
     fun toggleTimer() {
         if (_isRecording.value) {
             stopRecordingAndSubmit()
@@ -93,7 +93,6 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
         _liveTranscript.value = ""
         _statusMessage.value = ""
 
-        // One call — starts MediaRecorder (file) + SpeechRecognizer (live text)
         speechManager.startListening()
 
         timerJob = viewModelScope.launch {
@@ -102,7 +101,6 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
                 _timeRemaining.value -= 1
             }
             stopRecordingAndSubmit()
-            advanceToNextSpeech()
         }
     }
 
@@ -110,45 +108,91 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
         timerJob?.cancel()
         _isRecording.value = false
 
-        // Returns final transcript AND stops MediaRecorder saving the file
+        // Grab the final transcribed text from Android's SpeechRecognizer
         val finalTranscript = speechManager.stopListening()
-
-        // Audio file is also available if you need to send it to the server:
-        // val audioFile = speechManager.getAudioFile()
 
         if (finalTranscript.isNotBlank()) {
             submitToServer(finalTranscript)
+        } else {
+            _statusMessage.value = "No speech detected."
+            advanceToNextSpeech()
         }
     }
 
-    // ── SERVER SUBMISSION ─────────────────────────────────────────────────────
-
+    // --- DIRECT GEMINI API INTEGRATION ---
     private fun submitToServer(transcript: String) {
-        _statusMessage.value = "Sending to AI…"
+        _statusMessage.value = "Sending transcript to Gemini 1.5 Flash..."
+        _isProcessing.value = true // Show the loading spinner
+
         viewModelScope.launch {
             try {
-                val request = SpeechUploadRequest(
-                    text = transcript,
-                    speech_phase = _currentSpeech.value
+                // 1. Build the strict JSON instructions for Gemini
+                val systemPrompt = """
+                    You are a policy debate expert parsing a speech transcript.
+                    Extract each discrete argument or evidence card read in the speech.
+                    
+                    Return ONLY a raw JSON array matching this exact format. Do not include markdown formatting, backticks, or explanations:
+                    [
+                      {
+                        "argument_tag":  "short label/claim",
+                        "content_text":  "the argument or evidence",
+                        "source":        "author name and year if cited, else 'Analytic'",
+                        "is_dropped":    false
+                      }
+                    ]
+                """.trimIndent()
+
+                val userMessage = "Speech phase: ${_currentSpeech.value}\n\nTranscript:\n$transcript"
+
+                // 2. Package the request in Gemini's specific shape
+                val request = GeminiRequest(
+                    systemInstruction = GeminiSystemInstruction(listOf(GeminiPart(text = systemPrompt))),
+                    contents = listOf(
+                        GeminiContent(role = "user", parts = listOf(GeminiPart(text = userMessage)))
+                    )
                 )
+
+                // 3. Send to Google
                 val response = RetrofitClient.apiService.analyzeSpeech(request)
+
                 if (response.isSuccessful) {
                     val body = response.body()
-                    if (body != null) {
-                        _flowBoardData.value = body.flows
-                        _statusMessage.value = "Flow updated"
+
+                    // Navigate through Gemini's nested response to get the actual text
+                    val responseText = body?.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+
+                    if (!responseText.isNullOrBlank()) {
+
+                        // 4. Clean the response (strip formatting if it disobeyed instructions)
+                        var rawJson = responseText.trim()
+                        rawJson = rawJson.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+
+                        // 5. Convert JSON string back into Kotlin ArgumentCard objects
+                        val listType = object : TypeToken<List<ArgumentCard>>() {}.type
+                        val newCards: List<ArgumentCard> = Gson().fromJson(rawJson, listType)
+
+                        // 6. Push directly to the UI
+                        addAiArguments(_currentSpeech.value, newCards)
+                        _statusMessage.value = "Flow successfully updated!"
+                    } else {
+                        _statusMessage.value = "AI returned an empty response."
                     }
                 } else {
-                    _statusMessage.value = "Server error: ${response.code()}"
+                    _statusMessage.value = "API Error: ${response.code()}"
+                    android.util.Log.e("DebateApp", "Error Body: ${response.errorBody()?.string()}")
                 }
             } catch (e: Exception) {
-                _statusMessage.value = "Network error: ${e.message}"
+                _statusMessage.value = "Network error: ${e.localizedMessage}"
+                android.util.Log.e("DebateApp", "Exception", e)
+            } finally {
+                // Always turn off the loading spinner and advance the round, even if it fails
+                _isProcessing.value = false
+                advanceToNextSpeech()
             }
         }
     }
 
-    // ── SPEECH PROGRESSION (unchanged) ───────────────────────────────────────
-
+    // --- DEBATE PROGRESSION LOGIC ---
     fun advanceToNextSpeech() {
         timerJob?.cancel()
         _isRecording.value = false
@@ -166,8 +210,8 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // ── CALLED BY DEVELOPER 3 (unchanged) ────────────────────────────────────
-    fun addAiArguments(speechName: String, newCards: List<ArgumentCard>) {
+    // --- UI UPDATER ---
+    private fun addAiArguments(speechName: String, newCards: List<ArgumentCard>) {
         val currentFlows = _flowBoardData.value.toMutableList()
         val existingColIndex = currentFlows.indexOfFirst { it.speechName == speechName }
         if (existingColIndex != -1) {
@@ -181,6 +225,7 @@ class DebateViewModel(application: Application) : AndroidViewModel(application) 
         _flowBoardData.value = currentFlows
     }
 
+    // Dummy data so you aren't staring at a blank screen while testing
     private fun loadDummyData() {
         val dummyCards = listOf(
             ArgumentCard("Advantage", "Economic Growth: Plan stimulates economy", "Smith '23", false),

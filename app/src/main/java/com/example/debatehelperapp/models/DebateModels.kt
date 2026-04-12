@@ -43,3 +43,33 @@ data class SpeechUploadRequest(
     val text: String,
     val speech_phase: String
 )
+
+// --- GEMINI API MODELS ---
+
+data class GeminiPart(
+    val text: String
+)
+
+data class GeminiContent(
+    val role: String,
+    val parts: List<GeminiPart>
+)
+
+data class GeminiSystemInstruction(
+    val parts: List<GeminiPart>
+)
+
+// What we send to Gemini
+data class GeminiRequest(
+    val systemInstruction: GeminiSystemInstruction,
+    val contents: List<GeminiContent>
+)
+
+// What Gemini sends back
+data class GeminiResponse(
+    val candidates: List<GeminiCandidate>?
+)
+
+data class GeminiCandidate(
+    val content: GeminiContent?
+)
