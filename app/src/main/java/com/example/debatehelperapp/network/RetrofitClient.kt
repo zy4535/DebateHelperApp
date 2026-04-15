@@ -36,7 +36,7 @@ class RetryInterceptor(private val maxRetries: Int = 3) : Interceptor {
 object RetrofitClient {
 
     // PASTE YOUR ACTUAL API KEY HERE
-    const val GEMINI_API_KEY = "AIzaSyAn-J4W6k9DDcx7nmpALoPGUNTsmQNUOps"
+    const val GEMINI_API_KEY = "Deleted"
 
     private const val BASE_URL = "https://generativelanguage.googleapis.com/"
 
